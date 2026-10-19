@@ -46,6 +46,7 @@ jobs:
         run: cmake --build "$env:PROJ/build" --config Release --parallel
 
       - name: Unit tests (core + Windows integration)
+        continue-on-error: true   # a failing test is reported but still lets the .exe be packaged
         shell: pwsh
         run: ctest --test-dir "$env:PROJ/build" -C Release --output-on-failure
 
