@@ -1,0 +1,63 @@
+name: build-windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # Finds the project: either already laid out in the repo, or packed in a .zip uploaded to the repo.
+      - name: Locate project
+        shell: pwsh
+        run: |
+          $proj = $null
+          if (Test-Path "src/core/Util.cpp") { $proj = (Get-Location).Path }
+          else {
+            $zip = Get-ChildItem -Recurse -Filter *.zip -File | Select-Object -First 1
+            if (-not $zip) { Write-Error "No project sources and no .zip found in the repository."; exit 1 }
+            Write-Host "Extracting $($zip.FullName)"
+            Expand-Archive -Path $zip.FullName -DestinationPath "$env:RUNNER_TEMP\pkg" -Force
+            $cm = Get-ChildItem -Path "$env:RUNNER_TEMP\pkg" -Recurse -Filter CMakeLists.txt |
+                  Where-Object { Test-Path (Join-Path $_.DirectoryName "src\core\Util.cpp") } | Select-Object -First 1
+            if (-not $cm) { Write-Error "CMakeLists.txt with src/core/Util.cpp not found inside the zip."; exit 1 }
+            $proj = $cm.DirectoryName
+          }
+          Write-Host "Project directory: $proj"
+          "PROJ=$proj" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.3'
+          arch: 'win64_msvc2019_64'
+          cache: true
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S "$env:PROJ" -B "$env:PROJ/build" -G "Visual Studio 17 2022" -A x64
+
+      - name: Build (Release)
+        shell: pwsh
+        run: cmake --build "$env:PROJ/build" --config Release --parallel
+
+      - name: Unit tests (core + Windows integration)
+        shell: pwsh
+        run: ctest --test-dir "$env:PROJ/build" -C Release --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "$env:PROJ/build/Release/FiveMOptimizerPro.exe" dist/
+          windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw dist/FiveMOptimizerPro.exe
+          if (Test-Path "$env:PROJ/README.md") { Copy-Item "$env:PROJ/README.md" dist/ }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FiveMOptimizerPro-win64
+          path: dist
